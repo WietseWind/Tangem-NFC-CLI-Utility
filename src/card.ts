@@ -1,5 +1,5 @@
 import {
-  BACKUP_STATUS, CARD_SETTINGS, CARD_STATUS, CURVES, FW, PRODUCT_MASK, SIGNING_METHODS, TAG, USER_SETTINGS,
+  BACKUP_STATUS, CARD_SETTINGS, TERMINAL_LINK, CARD_STATUS, CURVES, FW, PRODUCT_MASK, SIGNING_METHODS, TAG, USER_SETTINGS,
   WALLET_AVAILABLE, WALLET_SETTINGS, WALLET_STATUS, type CardStatus, type Curve, type EncryptionMode,
 } from './constants.ts'
 import { Tlv } from './tlv.ts'
@@ -64,6 +64,12 @@ export interface CardInfo {
   userSettings: string[]
   securityDelayMs: number
   maxWallets: number
+  /** Wallet used when a command doesn't name one (fw ≥ 4) */
+  defaultWalletIndex?: number
+  /** Legacy cards: signatures allowed per wallet before it's wiped */
+  maxSignatures?: number
+  /** Linked terminal (lets SIGN skip the security delay) */
+  terminalLink?: string
   defaultCurve?: string
   supportedCurves: Curve[]
   signingMethods: string[]
@@ -137,6 +143,10 @@ export function parseCard(tlv: Tlv, accessCodeIsDefault: boolean): CardInfo {
     userSettings: flags(tlv.int(TAG.USER_SETTINGS_MASK) ?? 0, USER_SETTINGS),
     securityDelayMs: (tlv.int(TAG.PAUSE_BEFORE_PIN2) ?? 0) * 10,
     maxWallets: tlv.int(TAG.WALLETS_COUNT) ?? 1,
+    defaultWalletIndex: tlv.int(TAG.WALLET_INDEX),
+    maxSignatures: tlv.int(TAG.MAX_SIGNATURES),
+    terminalLink: tlv.has(TAG.TERMINAL_LINK_STATE) ? TERMINAL_LINK[tlv.int(TAG.TERMINAL_LINK_STATE) ?? -1] ?? 'unknown'
+      : tlv.has(TAG.IS_LINKED) ? 'linked' : undefined,
     defaultCurve,
     supportedCurves: supportedCurves(firmware, defaultCurve),
     signingMethods: signingMethods(tlv.int(TAG.SIGNING_METHOD)),

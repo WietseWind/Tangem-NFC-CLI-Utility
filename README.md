@@ -4,8 +4,9 @@ Talk to [Tangem](https://tangem.com) NFC cards from your computer with a USB PC/
 
 - **No native addons.** Calls the OS smart card stack directly through `bun:ffi` (macOS `PCSC.framework`, Linux `libpcsclite`, Windows `winscard.dll`), so nothing needs compiling and nothing breaks on new Node versions.
 - **Works with all three encryption modes:** plain, fast (challenge/response) and strong (ECDH secp256k1). The protocol is upgraded automatically when a card answers `SW_NEED_ENCRYPTION`.
-- Handles **security delays** (`SW_NEED_PAUSE`), access codes and passcodes, and both legacy single-wallet cards (fw < 4) and multi-wallet / HD cards (fw ≥ 4).
-- **XRPL addresses** for secp256k1 and ed25519 wallets, including on-card BIP44 derivation (`m/44'/144'/0'/0/0`) for HD wallets.
+- Handles **security delays** (`SW_NEED_PAUSE`), access codes, passcodes and CVC. When the card already reports a custom code, `tangem` asks for it before sending anything, because every wrong code slows the card down.
+- Works with both legacy single-wallet cards (fw < 4) and multi-wallet / HD cards (fw ≥ 4).
+- **XRPL addresses** for secp256k1 and ed25519 wallets, including on-card BIP44 derivation (`m/44'/144'/0'/0/0`, or any paths you pass) for HD wallets.
 - Optional **account lookups** on XRPL and Xahau, mainnet and testnet.
 
 ## Requirements
@@ -47,6 +48,8 @@ tangem info --check          # …and look the addresses up on XRPL/Xahau main +
 tangem create -c secp256k1   # create a wallet (prompts for the curve if omitted)
 tangem delete -i 0           # purge wallet #0 (asks for confirmation; -y to skip)
 tangem address -n mainnet    # XRPL addresses, checked on XRPL + Xahau mainnet
+tangem address --path "m/44'/144'/0'/0/0,m/44'/144'/1'/0/0"   # HD: several derived accounts
+tangem address --address rXXX… -n xrpl   # check just this address
 tangem readers               # list readers
 tangem info --json           # machine readable output
 ```
@@ -58,16 +61,30 @@ Every value can be passed as a flag. If a value is missing and you're in a termi
 | `-r, --reader <name\|index>` | Reader to use. By default `tangem` waits for a card on any reader. |
 | `-a, --access-code <code>` | Access code / PIN1 (default `000000`). Prompted for if the card rejects it. |
 | `-p, --passcode <code>` | Passcode / PIN2 (default `000`). Prompted for if the card rejects it. |
-| `--cvc <code>` | CVC, for cards personalized with `UseCVC` |
+| `--cvc <code>` | The 3-digit CVC printed on the card. Only cards personalized with `UseCVC` need it, for create and delete; you're prompted if it's missing. |
 | `-e, --encryption <mode>` | `auto` (default), `none`, `fast` or `strong` |
 | `-c, --curve <curve>` | `secp256k1`, `ed25519`, `ed25519_slip0010`, `secp256r1`, `bip0340`, `bls12381_G2*` |
 | `-i, --index <n>` | Wallet slot |
-| `--path <path>` | HD path used for the XRPL address (default `m/44'/144'/0'/0/0`) |
+| `--path <path,…>` | HD path(s) used for XRPL addresses, comma separated or repeated (default `m/44'/144'/0'/0/0`) |
+| `--address <r…,…>` | Only show and check these r-addresses |
 | `--check`, `-n, --networks <list>` | Look up accounts on `all`, `mainnet`, `testnet`, `xrpl`, `xrpl-testnet`, `xahau`, `xahau-testnet` |
 | `-y, --yes` | Skip the delete confirmation |
 | `--force` | Delete: skip the client-side permanent-wallet check and let the card decide |
 | `-t, --timeout <s>` | Give up waiting for a card after this many seconds |
 | `-v, --verbose` | Trace APDUs (in plain text) to stderr |
+
+### Which XRPL addresses?
+
+`tangem` never picks just one; it lists every address the card can produce:
+
+| Wallet | Addresses |
+| --- | --- |
+| secp256k1 | the address from the wallet's own key |
+| ed25519 / ed25519_slip0010 | the address from the wallet's own key (`ED…` public key) |
+| HD secp256k1 (has a chain code, fw ≥ 4.39) | the address from the wallet's own key **plus** one derived on the card for each `--path`. The Tangem app uses `m/44'/144'/0'/0/0`. |
+| secp256r1, bip0340, BLS | none (not usable on XRPL) |
+
+Multi-wallet cards list every wallet. In the wizard, **Check XRPL / Xahau networks** lets you pick which addresses and which networks to check (everything is ticked by default). Passing `--address` or `-n` skips that question.
 
 Network lookups use `xrplcluster.com`, `testnet.xrpl-labs.com`, `xahau.network` and `xahau-test.net`.
 

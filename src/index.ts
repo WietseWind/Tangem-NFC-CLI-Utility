@@ -1,5 +1,5 @@
 export { Tangem, encodeDerivationPath, type ConnectOptions } from './tangem.ts'
-export { Session, TangemError, frame, type SessionOptions, type Response } from './session.ts'
+export { Session, TangemError, frame, type SessionOptions, type Response, type UserCode } from './session.ts'
 export { Pcsc, CardConnection, PcscError, SCARD } from './pcsc.ts'
 export { Firmware, parseCard, parseWallet, luhn, formatCardId, type CardInfo, type Wallet } from './card.ts'
 export { Tlv, buildTlv, decodeTlv, encodeTlv } from './tlv.ts'

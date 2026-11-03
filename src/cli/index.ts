@@ -3,13 +3,13 @@ import { parseArgs } from 'node:util'
 import * as p from '@clack/prompts'
 import pc from 'picocolors'
 import pkg from '../../package.json' with { type: 'json' }
-import { Tangem } from '../tangem.ts'
+import { Tangem, encodeDerivationPath } from '../tangem.ts'
 import { TangemError } from '../session.ts'
 import { PcscError } from '../pcsc.ts'
 import { formatCardId, type CardInfo, type Wallet } from '../card.ts'
 import { xrplAddress, xrplCurve, xrplPublicKey } from '../xrpl.ts'
 import { CURVES, FW, SW, XRPL_DERIVATION_PATH, type Curve, type EncryptionMode } from '../constants.ts'
-import { NETWORK_IDS, checkAccount, parseNetworks, type NetworkId } from '../networks.ts'
+import { NETWORKS, NETWORK_IDS, checkAccount, parseNetworks, type NetworkId } from '../networks.ts'
 import { renderCard, renderNetwork, renderWallet, type WalletView, type XrplAccount } from './render.ts'
 
 const HELP = `
@@ -30,11 +30,13 @@ ${pc.bold('Options')}
   -r, --reader <name|index>  reader to use (default: first reader with a card)
   -a, --access-code <code>   access code / PIN1 (default 000000; prompted if wrong)
   -p, --passcode <code>      passcode / PIN2 (default 000; prompted if wrong)
-      --cvc <code>           CVC for cards that require it
+      --cvc <code>           3-digit CVC printed on the card (only cards with UseCVC; prompted)
   -e, --encryption <mode>    auto | none | fast | strong (default auto)
   -c, --curve <curve>        create: ${CURVES.join(', ')}
   -i, --index <n>            wallet index (create / delete / address)
-      --path <path>          HD derivation path for XRPL (default ${XRPL_DERIVATION_PATH})
+      --path <path,…>        HD derivation path(s) for XRPL, comma separated or repeated
+                             (default ${XRPL_DERIVATION_PATH})
+      --address <r…,…>       only show / check these XRPL address(es)
       --check                look up the XRPL address(es) on all networks
   -n, --networks <list>      networks to check (implies --check): all, mainnet, testnet,
                              ${NETWORK_IDS.join(', ')}
@@ -56,7 +58,10 @@ interface Opts {
   encryption: EncryptionMode | 'auto'
   curve?: Curve
   index?: number
-  path: string
+  /** HD derivation paths for XRPL addresses (HD secp256k1 wallets) */
+  paths: string[]
+  /** Only show / check these r-addresses (empty = all) */
+  addresses: string[]
   /** Networks to look addresses up on (empty = no lookups) */
   networks: NetworkId[]
   yes: boolean
@@ -69,6 +74,9 @@ interface Opts {
 
 class Cancelled extends Error {}
 
+/** Repeated and/or comma separated option values. */
+const list = (values?: string[]) => (values ?? []).flatMap(v => v.split(',')).map(v => v.trim()).filter(Boolean)
+
 async function main() {
   const { values: v, positionals } = parseArgs({
     allowPositionals: true,
@@ -80,7 +88,8 @@ async function main() {
       encryption: { type: 'string', short: 'e', default: 'auto' },
       curve: { type: 'string', short: 'c' },
       index: { type: 'string', short: 'i' },
-      path: { type: 'string', default: XRPL_DERIVATION_PATH },
+      path: { type: 'string', multiple: true },
+      address: { type: 'string', multiple: true },
       check: { type: 'boolean', default: false },
       networks: { type: 'string', short: 'n' },
       yes: { type: 'boolean', short: 'y', default: false },
@@ -101,6 +110,12 @@ async function main() {
   if (v.curve && !(CURVES as readonly string[]).includes(v.curve)) throw new Error(`Unknown curve "${v.curve}". Options: ${CURVES.join(', ')}`)
   if (v.index !== undefined && !/^\d+$/.test(v.index)) throw new Error('--index must be a number')
   if (v.timeout !== undefined && !(Number(v.timeout) > 0)) throw new Error('--timeout must be a positive number of seconds')
+  if (v.cvc !== undefined && !/^\d{3}$/.test(v.cvc)) throw new Error('--cvc must be 3 digits')
+  const paths = list(v.path)
+  paths.forEach(encodeDerivationPath) // throws on invalid paths
+  const addresses = list(v.address)
+  const badAddress = addresses.find(a => !/^r[1-9A-HJ-NP-Za-km-z]{24,34}$/.test(a))
+  if (badAddress) throw new Error(`Not an XRPL r-address: ${badAddress}`)
 
   const opts: Opts = {
     reader: v.reader,
@@ -110,7 +125,8 @@ async function main() {
     encryption: v.encryption as Opts['encryption'],
     curve: v.curve as Curve | undefined,
     index: v.index !== undefined ? Number(v.index) : undefined,
-    path: v.path!,
+    paths: paths.length ? paths : [XRPL_DERIVATION_PATH],
+    addresses,
     networks: v.networks ? parseNetworks(v.networks) : v.check ? NETWORK_IDS : [],
     yes: v.yes!,
     force: v.force!,
@@ -159,9 +175,11 @@ async function remove(opts: Opts) {
 
 async function address(opts: Opts) {
   await withCard(opts, async (tangem, card) => {
-    const wallets = card.wallets.filter(w => opts.index === undefined || w.index === opts.index)
+    const wallets = opts.index === undefined ? card.wallets : card.wallets.filter(w => w.index === opts.index)
     if (wallets.length === 0) throw new Error(opts.index === undefined ? 'No wallets on this card' : `No wallet at index ${opts.index}`)
-    const views = await walletViews(tangem, card, opts, wallets)
+    const views = (await walletViews(tangem, card, opts, wallets)).filter(w => !opts.addresses.length || w.xrpl.length)
+    // Makes `tangem address --address r…` usable as an "is this the right card?" check in scripts
+    if (opts.addresses.length && !views.length) throw new Error('None of the given addresses are on this card')
     output(opts, { cardId: card.cardId, wallets: views.map(w => ({ index: w.index, curve: w.curve, xrpl: w.xrpl })) }, () =>
       views.map(w => w.xrpl.length
         ? w.xrpl.map(a => `${pc.dim(`#${w.index}${a.path ? ` ${a.path}` : ''}`)}  ${a.address}` +
@@ -208,11 +226,22 @@ async function wizard(opts: Opts) {
             const index = await doDelete(tangem, card, opts)
             if (index !== undefined) p.log.success(`Wallet #${index} deleted`)
           } else if (action === 'check') {
-            const networks = opts.networks.length ? opts.networks : NETWORK_IDS
-            console.log((await walletViews(tangem, card, { ...opts, networks })).map(renderWallet).join(''))
+            await wizardCheck(tangem, card, opts)
           } else if (action === 'derive') {
-            const path = await ask(p.text({ message: 'Derivation path', initialValue: opts.path, validate: s => (s && /^m(\/\d+['hH]?)+$/.test(s.trim()) ? undefined : "e.g. m/44'/144'/0'/0/0") }))
-            const views = await walletViews(tangem, card, { ...opts, path: path.trim() })
+            const input = await ask(p.text({
+              message: 'Derivation path(s), comma separated',
+              initialValue: opts.paths.join(', '),
+              validate: s => {
+                try {
+                  const paths = list([s ?? ''])
+                  if (!paths.length) return 'Enter at least one path'
+                  paths.forEach(encodeDerivationPath)
+                } catch (e) {
+                  return errorMessage(e)
+                }
+              },
+            }))
+            const views = await walletViews(tangem, card, { ...opts, paths: list([input]), networks: [] })
             console.log(views.map(renderWallet).join(''))
           } else if (action === 'refresh') {
             card = await scan(tangem, opts)
@@ -296,7 +325,7 @@ async function doCreate(tangem: Tangem, card: CardInfo, opts: Opts): Promise<Wal
   const curveBlocker = tangem.createBlocker(curve)
   if (curveBlocker) throw new Error(curveBlocker)
 
-  return withPasscode(tangem, opts, 'Creating wallet…', () => tangem.createWallet({ curve, index: opts.index, cvc: opts.cvc }))
+  return withCodes(tangem, opts, 'Creating wallet…', () => tangem.createWallet({ curve, index: opts.index }))
 }
 
 /** Returns the deleted index, or undefined when the user backed out. */
@@ -323,14 +352,17 @@ async function doDelete(tangem: Tangem, card: CardInfo, opts: Opts): Promise<num
   const wallet = card.wallets.find(w => w.index === index)!
   if (!opts.yes) {
     if (!opts.interactive) throw new Error('Refusing to delete a wallet without confirmation — pass --yes')
-    p.log.warn(`${pc.red('This destroys the private key of wallet')} #${index} ${walletLabel(wallet)}\n${pc.red('Any funds still on it are lost forever.')}`)
+    const backedUp = wallet.hasBackup || card.backupStatus === 'active'
+    p.log.warn(`${pc.red('This destroys the private key of wallet')} #${index} ${walletLabel(wallet)} ${pc.red('on this card.')}\n` + (backedUp
+      ? pc.yellow(`It is backed up${card.backupCount ? ` on ${card.backupCount} other card(s)` : ''}: those copies are NOT deleted and still control the funds.`)
+      : pc.red('Any funds still on it are lost forever.')))
     const ok = await ask(p.confirm({ message: `Delete wallet #${index}?`, initialValue: false }))
     if (!ok) {
       p.log.info('Kept the wallet')
       return undefined
     }
   }
-  await withPasscode(tangem, opts, 'Deleting wallet…', () => tangem.purgeWallet(index, { force: opts.force }))
+  await withCodes(tangem, opts, 'Deleting wallet…', () => tangem.purgeWallet(index, { force: opts.force }))
   return index
 }
 
@@ -339,30 +371,86 @@ const walletLabel = (w: Wallet) => {
   return curve ? xrplAddress(w.publicKey, curve) : `${w.publicKey.slice(0, 16)}…`
 }
 
+/**
+ * Every XRPL account per wallet: the wallet key itself, plus (HD secp256k1 wallets) one derived
+ * on-card per `opts.paths`. Filtered by `opts.addresses`; looked up on `opts.networks`.
+ */
 async function walletViews(tangem: Tangem, card: CardInfo, opts: Opts, wallets = card.wallets): Promise<WalletView[]> {
   const views: WalletView[] = []
   for (const w of wallets) {
     const xrpl: XrplAccount[] = []
     const curve = xrplCurve(w.curve)
-    if (curve && w.publicKey) xrpl.push({ address: xrplAddress(w.publicKey, curve), publicKey: xrplPublicKey(w.publicKey, curve).toString('hex').toUpperCase() })
-    // HD wallets: Tangem apps use the BIP44 XRP path — derive it on the card.
+    if (curve && w.publicKey) xrpl.push(account(w.publicKey, curve))
+    // HD wallets: Tangem apps use the BIP44 XRP path — derive on the card.
     if (w.chainCode && w.curve === 'secp256k1' && card.firmware.gte(FW.hdWallet)) {
-      try {
-        const derived = await tangem.readWallet(w.index, opts.path)
-        xrpl.push({ path: opts.path, address: xrplAddress(derived.publicKey, 'secp256k1'), publicKey: xrplPublicKey(derived.publicKey, 'secp256k1').toString('hex').toUpperCase() })
-      } catch (e) {
-        if (opts.verbose) console.error(pc.dim(`derivation failed: ${errorMessage(e)}`))
+      for (const path of opts.paths) {
+        try {
+          const derived = await tangem.readWallet(w.index, path)
+          xrpl.push({ ...account(derived.publicKey, 'secp256k1'), path })
+        } catch (e) {
+          warn(opts, `Wallet #${w.index}: derivation at ${path} failed: ${errorMessage(e)}`)
+        }
       }
     }
-    views.push({ ...w, xrpl })
+    const wanted = opts.addresses.length ? xrpl.filter(a => opts.addresses.includes(a.address)) : xrpl
+    views.push({ ...w, xrpl: wanted })
   }
-  if (opts.networks.length) {
-    const s = status(opts)
-    s.start(`Checking ${opts.networks.length} network(s)…`)
-    await Promise.all(views.flatMap(w => w.xrpl).map(async a => { a.networks = await checkAccount(a.address, opts.networks) }))
-    s.stop('Network lookups done')
+  if (wallets === card.wallets) {
+    const found = new Set(views.flatMap(w => w.xrpl.map(a => a.address)))
+    const hd = card.wallets.some(w => w.chainCode)
+    for (const a of opts.addresses.filter(a => !found.has(a))) warn(opts, `${a} is not on this card${hd ? ` (derived paths checked: ${opts.paths.join(', ')})` : ''}`)
   }
+  if (opts.networks.length) await checkNetworks(views.flatMap(w => w.xrpl), opts.networks, opts)
   return views
+}
+
+const account = (publicKey: string, curve: string): XrplAccount => ({
+  address: xrplAddress(publicKey, curve),
+  publicKey: xrplPublicKey(publicKey, curve).toString('hex').toUpperCase(),
+})
+
+async function checkNetworks(accounts: XrplAccount[], networks: NetworkId[], opts: Opts) {
+  if (!accounts.length) return
+  const s = status(opts)
+  s.start(`Checking ${accounts.length} address(es) on ${networks.length} network(s)…`)
+  await Promise.all(accounts.map(async a => { a.networks = await checkAccount(a.address, networks) }))
+  s.stop('Network lookups done')
+}
+
+/** Wizard: pick addresses + networks (unless prefilled with --address / -n), then look them up. */
+async function wizardCheck(tangem: Tangem, card: CardInfo, opts: Opts) {
+  const views = await walletViews(tangem, card, { ...opts, networks: [] })
+  const all = views.flatMap(w => w.xrpl.map(a => ({ wallet: w.index, a })))
+  if (!all.length) return void p.log.warn('No XRPL addresses on this card')
+
+  const picked = all.length === 1 || opts.addresses.length
+    ? all
+    : (await ask(p.multiselect({
+      message: 'Addresses to check',
+      options: all.map((x, i) => ({ value: i, label: x.a.address, hint: `#${x.wallet}${x.a.path ? ` ${x.a.path}` : ''}` })),
+      initialValues: all.map((_, i) => i),
+      required: true,
+    }))).map(i => all[i]!)
+
+  const networks = opts.networks.length
+    ? opts.networks
+    : await ask(p.multiselect({
+      message: 'Networks',
+      options: NETWORK_IDS.map(n => ({ value: n, label: NETWORKS[n].name, hint: NETWORKS[n].url.replace('https://', '') })),
+      initialValues: NETWORK_IDS,
+      required: true,
+    }))
+
+  await checkNetworks(picked.map(x => x.a), networks, opts)
+  console.log(picked.map(({ wallet, a }) =>
+    `\n  ${pc.dim(`#${wallet}${a.path ? ` ${a.path}` : ''}`)}  ${pc.green(a.address)}` +
+    (a.networks ?? []).map(n => `\n    ${renderNetwork(n)}`).join('')).join('') + '\n')
+}
+
+function warn(opts: Opts, message: string) {
+  if (opts.json) return
+  if (opts.interactive) p.log.warn(message)
+  else console.error(pc.yellow(`! ${message}`))
 }
 
 // ── plumbing ────────────────────────────────────────────────────────────────
@@ -386,6 +474,7 @@ async function openCard(opts: Opts): Promise<{ tangem: Tangem; card: CardInfo }>
       timeoutMs: opts.timeoutMs,
       accessCode: opts.accessCode,
       passcode: opts.passcode,
+      cvc: opts.cvc,
       encryption: opts.encryption,
       onApdu: opts.verbose ? (dir, data, note) => console.error(pc.dim(`${dir} ${note ?? ''} ${data.toString('hex').toUpperCase()}`)) : undefined,
       onSecurityDelay: secs => s.message(`Security delay — keep the card on the reader (${Math.ceil(secs)}s)`),
@@ -407,7 +496,7 @@ async function scan(tangem: Tangem, opts: Opts, s: Status = status(opts)): Promi
     try {
       return await tangem.scan()
     } catch (e) {
-      if (!(e instanceof TangemError && e.sw === SW.INVALID_ACCESS_CODE) || !opts.interactive || attempt > 3) throw e
+      if (!(e instanceof TangemError && e.needs.includes('accessCode')) || !opts.interactive || attempt > 3) throw e
       s.stop(pc.yellow(attempt === 1 ? 'This card has a custom access code' : 'Wrong access code'))
       tangem.session.setAccessCode(await ask(p.password({ message: 'Access code (PIN1)', validate: v => (v ? undefined : 'Required') })))
       s.start('Reading card…')
@@ -415,8 +504,8 @@ async function scan(tangem: Tangem, opts: Opts, s: Status = status(opts)): Promi
   }
 }
 
-/** Run a PIN2-protected command, prompting for the passcode when the card rejects it. */
-async function withPasscode<T>(tangem: Tangem, opts: Opts, label: string, fn: () => Promise<T>): Promise<T> {
+/** Run a state-changing command, prompting for passcode (PIN2) / CVC when missing or rejected. */
+async function withCodes<T>(tangem: Tangem, opts: Opts, label: string, fn: () => Promise<T>): Promise<T> {
   const s = status(opts)
   const prev = tangem.session.opts.onSecurityDelay
   tangem.session.opts.onSecurityDelay = secs => s.message(`Security delay — keep the card on the reader (${Math.ceil(secs)}s)`)
@@ -428,12 +517,19 @@ async function withPasscode<T>(tangem: Tangem, opts: Opts, label: string, fn: ()
         s.stop('Done')
         return result
       } catch (e) {
-        if (!(e instanceof TangemError && e.sw === SW.INVALID_PASSCODE) || !opts.interactive || attempt > 3) {
-          s.error(errorMessage(e))
-          throw new Reported(errorMessage(e))
+        const needs = e instanceof TangemError ? e.needs.filter(n => n !== 'accessCode') : []
+        if (!needs.length || !opts.interactive || attempt > 3) {
+          const hint = needs.length ? ` — pass ${needs.map(n => (n === 'cvc' ? '--cvc' : '-p')).join(' / ')}` : ''
+          s.error(errorMessage(e) + hint)
+          throw new Reported(errorMessage(e) + hint)
         }
-        s.stop(pc.yellow(attempt === 1 ? 'This card has a custom passcode' : 'Wrong passcode'))
-        tangem.session.passcode = await ask(p.password({ message: 'Passcode (PIN2)', validate: v => (v ? undefined : 'Required') }))
+        s.stop(pc.yellow(errorMessage(e)))
+        if (needs.includes('passcode')) {
+          tangem.session.passcode = await ask(p.password({ message: 'Passcode (PIN2)', validate: v => (v ? undefined : 'Required') }))
+        }
+        if (needs.includes('cvc')) {
+          tangem.session.cvc = await ask(p.text({ message: 'CVC (3 digits printed on the card)', validate: v => (/^\d{3}$/.test(v ?? '') ? undefined : '3 digits') }))
+        }
       }
     }
   } finally {

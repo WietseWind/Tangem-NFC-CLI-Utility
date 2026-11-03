@@ -45,15 +45,21 @@ export function renderCard(card: CardInfo, wallets: WalletView[]): string {
   out += row('Signing', card.signingMethods.join(', '))
   out += row('Encryption', card.encryptionAllowed.join(', '))
   out += row('Security delay', delay)
-  out += row('Wallet slots', `${used}/${card.maxWallets} used`)
+  out += row('Wallet slots', `${used}/${card.maxWallets} used${card.maxWallets > 1 && card.defaultWalletIndex !== undefined ? pc.dim(` · default #${card.defaultWalletIndex}`) : ''}`)
+  out += row('Max signatures', card.maxSignatures?.toLocaleString('en-US'))
   out += row('Access code', yesNo(card.isAccessCodeSet))
   out += row('Passcode', yesNo(card.isPasscodeSet))
   out += row('Backup', backup)
+  if (card.settings.includes('requireBackup') && card.backupStatus !== 'active') {
+    out += row('', pc.yellow('Backup required: wallets stay unusable until a backup is made (Tangem app)'))
+  }
+  out += row('Terminal link', card.terminalLink && card.terminalLink !== 'notLinked' ? card.terminalLink : undefined)
   out += row('Blockchain', card.blockchain)
   out += row('Token', token)
   out += row('Settings', wrap(card.settings, 60))
   if (card.userSettings.length) out += row('User settings', card.userSettings.join(', '))
   out += row('Card key', card.cardPublicKey)
+  out += row('Issuer key', card.issuerPublicKey)
 
   out += `\n  ${pc.bold('Wallets')}${wallets.length ? '' : pc.dim('  none')}\n`
   for (const w of wallets) out += renderWallet(w)
@@ -63,7 +69,7 @@ export function renderCard(card: CardInfo, wallets: WalletView[]): string {
 export function renderWallet(w: WalletView): string {
   const tags = [w.isPermanent && 'permanent', w.isImported && 'imported', w.hasBackup && 'backed up', w.chainCode && 'HD'].filter(Boolean)
   let out = `\n  ${pc.bold(`#${w.index}`)}  ${w.curve ?? '?'}  ${statusColor(w.status)}${tags.length ? pc.dim(`  (${tags.join(', ')})`) : ''}\n`
-  out += row('  Public key', w.publicKey)
+  out += row('  Public key', w.publicKey || pc.yellow('unavailable (backup required?)'))
   for (const a of w.xrpl) {
     out += row(a.path ? `  XRPL ${a.path}` : '  XRPL', pc.green(a.address))
     if (a.path) out += row('  Derived key', pc.dim(a.publicKey))

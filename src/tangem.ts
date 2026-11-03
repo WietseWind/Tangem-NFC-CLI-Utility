@@ -1,5 +1,5 @@
 import { CardConnection, Pcsc } from './pcsc.ts'
-import { Session, TangemError, type SessionOptions } from './session.ts'
+import { Session, TangemError, type SessionOptions, type UserCode } from './session.ts'
 import { Tlv, cstring, hex, u32, u8 } from './tlv.ts'
 import { parseCard, parseWallet, type CardInfo, type Wallet } from './card.ts'
 import { sha256 } from './crypto.ts'
@@ -153,7 +153,7 @@ export class Tangem {
   }
 
   /** CREATE_WALLET. Legacy cards (fw < 4) always use their default curve. */
-  async createWallet(opts: { curve?: Curve; index?: number; cvc?: string } = {}): Promise<Wallet> {
+  async createWallet(opts: { curve?: Curve; index?: number } = {}): Promise<Wallet> {
     const card = this.#requireCard()
     const legacy = !card.firmware.gte(FW.multiwallet)
     const curve = (legacy ? card.defaultCurve : opts.curve ?? 'secp256k1') as Curve
@@ -162,12 +162,13 @@ export class Tangem {
     const index = opts.index ?? this.freeWalletIndex()!
     if (card.wallets.some(w => w.index === index)) throw new TangemError(`Wallet slot #${index} is already in use`, SW.WALLET_ALREADY_EXISTS)
     if (index >= card.maxWallets) throw new TangemError(`Wallet index ${index} out of range (0-${card.maxWallets - 1})`)
+    this.#assertUserCodes(card)
 
     const res = await this.#mapErrors(
       () => this.session.send(INS.CREATE_WALLET, [
         [TAG.PIN, this.#pin(this.session.accessCode, DEFAULT_ACCESS_CODE)],
         [TAG.PIN2, this.#pin(this.session.passcode, DEFAULT_PASSCODE)],
-        [TAG.CVC, opts.cvc ? Buffer.from(opts.cvc, 'utf8') : null],
+        [TAG.CVC, this.#cvc(card)],
         [TAG.CARD_ID, hex(card.cardId)],
         ...(legacy ? [] : [
           [TAG.SETTINGS_MASK, u32(WALLET_SETTINGS.isReusable)],
@@ -176,7 +177,7 @@ export class Tangem {
           [TAG.WALLET_INDEX, u8(index)],
         ] as Array<[number, Buffer]>),
       ]),
-      { [SW.INVALID_PARAMS]: passcodeError, [SW.INVALID_PASSCODE]: passcodeError },
+      this.#codeErrors(card),
     )
 
     const wallet: Wallet = (card.firmware.gte(FW.createWalletResponse) ? parseWallet(res.tlv, card) : undefined) ?? {
@@ -214,16 +215,17 @@ export class Tangem {
     const blocker = this.purgeBlocker(index, opts.force)
     if (blocker) throw new TangemError(blocker)
     const permanent = card.wallets.find(w => w.index === index)?.isPermanent
+    this.#assertUserCodes(card)
     await this.#mapErrors(
       () => this.session.send(INS.PURGE_WALLET, [
         [TAG.WALLET_INDEX, u8(index)],
         [TAG.PIN, this.#pin(this.session.accessCode, DEFAULT_ACCESS_CODE)],
         [TAG.PIN2, this.#pin(this.session.passcode, DEFAULT_PASSCODE)],
+        [TAG.CVC, this.#cvc(card)],
         [TAG.CARD_ID, hex(card.cardId)],
       ]),
       {
-        [SW.INVALID_PARAMS]: passcodeError,
-        [SW.INVALID_PASSCODE]: passcodeError,
+        ...this.#codeErrors(card),
         // Seen live (fw 4.52): a permanent wallet is refused with 6286 after the security delay
         ...(permanent && { [SW.ERROR_PROCESSING_COMMAND]: () => new TangemError('Card refused: the wallet is permanent (SW 6286)', SW.ERROR_PROCESSING_COMMAND) }),
       },
@@ -251,6 +253,30 @@ export class Tangem {
     if (card.firmware.gte(FW.v8)) throw new TangemError('Firmware ≥ 8.59 (new secure channel) is not supported yet')
   }
 
+  /**
+   * Fail before talking to the card when we already know a code is missing:
+   * every wrong PIN2/CVC makes the card slower to respond until the right one is given.
+   */
+  #assertUserCodes(card: CardInfo) {
+    const needs: UserCode[] = []
+    if (card.isPasscodeSet && this.session.passcode === DEFAULT_PASSCODE) needs.push('passcode')
+    if (card.settings.includes('useCvc') && !this.session.cvc) needs.push('cvc')
+    if (needs.length) throw new TangemError(`${describeCodes(needs)} required`, undefined, needs)
+  }
+
+  /** Map the card's wrong-code answers to errors listing which codes to ask for. */
+  #codeErrors(card: CardInfo) {
+    const needs: UserCode[] = card.isPasscodeSet === false ? [] : ['passcode']
+    if (card.settings.includes('useCvc')) needs.push('cvc')
+    if (!needs.length) needs.push('passcode')
+    const error = () => new TangemError(`${describeCodes(needs)} is wrong or required`, SW.INVALID_PASSCODE, needs)
+    return { [SW.INVALID_PARAMS]: error, [SW.INVALID_PASSCODE]: error }
+  }
+
+  #cvc(card: CardInfo) {
+    return card.settings.includes('useCvc') && this.session.cvc ? Buffer.from(this.session.cvc, 'utf8') : null
+  }
+
   /** PIN hash TLV value, omitted where firmware treats a missing PIN as default (fw ≥ 4.34). */
   #pin(code: string, defaultCode: string) {
     const card = this.#requireCard()
@@ -268,8 +294,7 @@ export class Tangem {
   }
 }
 
-const accessCodeError = () => new TangemError('Access code (PIN1) is wrong or required', SW.INVALID_ACCESS_CODE)
-const passcodeError = () => new TangemError('Passcode (PIN2) is wrong or required', SW.INVALID_PASSCODE)
+const accessCodeError = () => new TangemError('Access code (PIN1) is wrong or required', SW.INVALID_ACCESS_CODE, ['accessCode'])
 
 /** "m/44'/144'/0'/0/0" → 4-byte big-endian indices (hardened = | 0x80000000). */
 export function encodeDerivationPath(path: string): Buffer {
@@ -283,3 +308,6 @@ export function encodeDerivationPath(path: string): Buffer {
     return u32(m[2] ? (n | 0x80000000) >>> 0 : n)
   }))
 }
+
+const describeCodes = (needs: UserCode[]) =>
+  needs.map(n => (n === 'accessCode' ? 'Access code (PIN1)' : n === 'passcode' ? 'Passcode (PIN2)' : 'CVC')).join(' or ')

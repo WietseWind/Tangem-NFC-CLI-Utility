@@ -3,8 +3,14 @@ import { ENCRYPTION, INS, SW, SW_MESSAGE, TAG, isSuccess, type EncryptionMode } 
 import { aesDecrypt, aesEncrypt, crc16a, ecdhKeyPair, protocolKey, randomBytes, sha256 } from './crypto.ts'
 import { Tlv, buildTlv } from './tlv.ts'
 
+/** User codes a command may need (re-)entered. */
+export type UserCode = 'accessCode' | 'passcode' | 'cvc'
+
 export class TangemError extends Error {
-  constructor(message: string, readonly sw?: number) {
+  /**
+   * @param needs codes that are missing or wrong; supplying them may make a retry succeed
+   */
+  constructor(message: string, readonly sw?: number, readonly needs: UserCode[] = []) {
     super(message)
     this.name = 'TangemError'
   }
@@ -20,6 +26,8 @@ export interface SessionOptions {
   accessCode?: string
   /** PIN2 / passcode (plain text). Default '000'. */
   passcode?: string
+  /** 3-digit CVC printed on cards personalized with UseCVC. */
+  cvc?: string
   /** Start with this encryption mode; 'auto' starts unencrypted and upgrades on SW_NEED_ENCRYPTION. */
   encryption?: EncryptionMode | 'auto'
   /** Called for every raw APDU exchanged (plain-text view, before encryption / after decryption). */
@@ -44,6 +52,7 @@ export class Session {
   encryption: EncryptionMode
   accessCode: string
   passcode: string
+  cvc?: string
   /** ISO 14443-3 UID (from OPEN_SESSION or the reader). */
   uid?: Buffer
   #key?: Buffer
@@ -52,6 +61,7 @@ export class Session {
   constructor(readonly conn: CardConnection, readonly opts: SessionOptions = {}) {
     this.accessCode = opts.accessCode ?? '000000'
     this.passcode = opts.passcode ?? '000'
+    this.cvc = opts.cvc
     this.encryption = opts.encryption && opts.encryption !== 'auto' ? opts.encryption : 'none'
     this.#upgradable = !opts.encryption || opts.encryption === 'auto'
   }

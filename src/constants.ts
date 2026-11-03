@@ -52,6 +52,7 @@ export const TAG = {
   ISSUER_PUBLIC_KEY: 0x30,
   IS_ACTIVATED: 0x3a,
   IS_LINKED: 0x58,
+  TERMINAL_LINK_STATE: 0x5f,
   PIN2_IS_DEFAULT: 0x59,
   PIN_IS_DEFAULT: 0x5a,
   WALLET_PUBLIC_KEY: 0x60,
@@ -210,6 +211,8 @@ export const PRODUCT_MASK: Record<string, number> = {
 }
 
 export const BACKUP_STATUS: Record<number, string> = { 0: 'noBackup', 1: 'cardLinked', 2: 'active' }
+
+export const TERMINAL_LINK: Record<number, string> = { 0: 'notLinked', 1: 'linkedToAnother', 2: 'linked' }
 
 export const ENCRYPTION = { none: 0x00, fast: 0x01, strong: 0x02 } as const
 export type EncryptionMode = keyof typeof ENCRYPTION
