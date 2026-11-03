@@ -1,0 +1,33 @@
+{
+  "name": "tangem-nfc",
+  "version": "0.1.0",
+  "description": "Talk to Tangem NFC cards from a USB PC/SC reader: SDK + `tangem` CLI (Bun, zero native deps)",
+  "type": "module",
+  "license": "MIT",
+  "author": "Wietse Wind <mail@wietse.com>",
+  "keywords": ["tangem", "nfc", "pcsc", "smartcard", "hardware-wallet", "xrpl", "bun"],
+  "bin": {
+    "tangem": "src/cli/index.ts"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": ["src", "README.md", "LICENSE"],
+  "engines": {
+    "bun": ">=1.1.0"
+  },
+  "scripts": {
+    "start": "bun src/cli/index.ts",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@clack/prompts": "^1.8.1",
+    "@noble/curves": "^2.4.0",
+    "picocolors": "^1.1.1"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.4",
+    "typescript": "^7.0.2"
+  }
+}
