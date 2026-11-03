@@ -2,6 +2,8 @@
 
 Talk to [Tangem](https://tangem.com) NFC cards from your computer with a USB PC/SC reader: a small TypeScript SDK and a `tangem` CLI.
 
+![The tangem wizard: card details, wallet with XRPL address, and the next-step menu](docs/wizard.webp)
+
 - **No native addons.** Calls the OS smart card stack directly through `bun:ffi` (macOS `PCSC.framework`, Linux `libpcsclite`, Windows `winscard.dll`), so nothing needs compiling and nothing breaks on new Node versions.
 - **Works with all three encryption modes:** plain, fast (challenge/response) and strong (ECDH secp256k1). The protocol is upgraded automatically when a card answers `SW_NEED_ENCRYPTION`.
 - Handles **security delays** (`SW_NEED_PAUSE`), access codes, passcodes and CVC. When the card already reports a custom code, `tangem` asks for it before sending anything, because every wrong code slows the card down.
