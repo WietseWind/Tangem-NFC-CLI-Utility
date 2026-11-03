@@ -33,7 +33,7 @@ Some readers show up as more than one PC/SC slot (the ACR1552U appears as `Reade
 ## Install
 
 ```bash
-git clone https://github.com/<you>/TangemNFC-CLI-SDK && cd TangemNFC-CLI-SDK
+git clone https://github.com/WietseWind/Tangem-NFC-CLI-Utility && cd Tangem-NFC-CLI-Utility
 bun install
 bun link            # puts `tangem` in ~/.bun/bin
 ```

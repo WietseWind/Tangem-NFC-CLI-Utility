@@ -5,6 +5,12 @@
   "type": "module",
   "license": "MIT",
   "author": "Wietse Wind <mail@wietse.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/WietseWind/Tangem-NFC-CLI-Utility.git"
+  },
+  "homepage": "https://github.com/WietseWind/Tangem-NFC-CLI-Utility#readme",
+  "bugs": "https://github.com/WietseWind/Tangem-NFC-CLI-Utility/issues",
   "keywords": ["tangem", "nfc", "pcsc", "smartcard", "hardware-wallet", "xrpl", "bun"],
   "bin": {
     "tangem": "src/cli/index.ts"
